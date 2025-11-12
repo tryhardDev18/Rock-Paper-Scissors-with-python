@@ -1,4 +1,5 @@
 import tkinter as tk
+import tkinter.ttk as ttk
 from PIL import Image, ImageTk, ImageEnhance
 from PIL import Image, ImageTk
 from PIL import ImageEnhance
@@ -28,6 +29,7 @@ draw_sfx = pygame.mixer.Sound(resource_path("audio/draw.mp3"))
 winsound_sfx = pygame.mixer.Sound(resource_path("audio/winsound.mp3"))
 losesound_sfx = pygame.mixer.Sound(resource_path("audio/losesound.mp3"))
 pause_sfx = pygame.mixer.Sound(resource_path("audio/pause.mp3"))
+coin_sfx = pygame.mixer.Sound(resource_path("audio/coins.mp3"))
 
 choice_sfx = {
     "rock": pygame.mixer.Sound(resource_path("audio/rock.wav")),
@@ -131,10 +133,24 @@ def slide_animation(x=-300):
     startBtn.place(x=x, y=500)
     window.after(10, slide_animation, x + 10)
 
+def create_shop_button():
+    global shopBtn
+    shopBtn = tk.Button(main_menu, text="SHOP", font=("Pixel game", 30),
+                        width=14, bg="#136bae", fg="#FFE5A1", relief="raised",
+                        command=lambda: shop_page.tkraise())
+    shopBtn.place(x=260, y=420)  # above Start button
+    shopBtn.bind("<Enter>", lambda e: shopBtn.config(bg="#1e79c6"))
+    shopBtn.bind("<Leave>", lambda e: shopBtn.config(bg="#136bae"))
+
+
+
+
+
 # --- Fade in w/ "Made by Luka" ---
 def fade_step(alpha):
     if alpha <= 0:
         overlay.destroy()
+        create_shop_button()
         if hasattr(main_menu, "made_by_label"):
             main_menu.made_by_label.destroy()
         slide_animation()
@@ -181,6 +197,443 @@ canvas.pack(fill="both", expand=True)
 canvas_bg = canvas.create_image(400, 300, image=game_bg_photo)
 score_text_id = canvas.create_text(400, 28, text="Wins: 0  Losses: 0  Draws: 0",
                                    font=("Pixel game", 16), fill="white")
+
+
+# --- Load images ---
+img_size = (120, 120)
+player_imgs = {c: ImageTk.PhotoImage(Image.open(resource_path(f"imgs/{c}.png")).resize(img_size)) for c in choices}
+npc_imgs = {c: ImageTk.PhotoImage(Image.open(resource_path(f"imgs/{c}.png")).resize(img_size).rotate(180)) for c in choices}
+base_player_imgs = player_imgs.copy()
+base_npc_imgs = npc_imgs.copy()
+
+# --- Positions ---
+center_x = 400
+spacing = 190
+npc_positions = {"rock": (center_x - spacing, 130), "paper": (center_x, 130), "scissors": (center_x + spacing, 130)}
+player_positions = {"rock": (center_x - spacing, 470), "paper": (center_x, 470), "scissors": (center_x + spacing, 470)}
+npc_labels = {c: canvas.create_image(x, y, image=npc_imgs[c]) for c, (x, y) in npc_positions.items()}
+player_labels = {c: canvas.create_image(x, y, image=player_imgs[c]) for c, (x, y) in player_positions.items()}
+countdown_text = canvas.create_text(center_x, 300, text="", font=("Pixel game", 50), fill="white")
+
+
+
+# -------------------- COIN / SAVE SYSTEM --------------------
+import json
+
+# Save file location (cross-platform; safe for PyInstaller too)
+# We save to the user's home directory (not _MEIPASS, which is read-only when frozen).
+_SAVE_FILENAME = os.path.join(os.path.expanduser("~"), ".rps_save.json")
+
+# coins variable already exists in your code — if not, it will be created here
+try:
+    coins  # preserve if already defined in your code above
+except NameError:
+    coins = 0
+
+# Save file location (already exists)
+_SAVE_FILENAME = os.path.join(os.path.expanduser("~"), ".rps_save.json")
+
+
+
+
+def load_save():
+    """Load saved data (coins and equipped skin)."""
+    global coins, equipped_skin, owned_skins
+    try:
+        if os.path.exists(_SAVE_FILENAME):
+            with open(_SAVE_FILENAME, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            coins = int(data.get("coins", 0))
+            equipped_skin = data.get("equipped_skin", "Default Skin")
+            owned_skins = set(data.get("owned_skins", ["Default Skin"]))
+        else:
+            coins = 0
+            equipped_skin = "Default Skin"
+            owned_skins = {"Default Skin"}
+    except Exception as e:
+        print("Load save failed:", e)
+        coins = 0
+        equipped_skin = "Default Skin"
+        owned_skins = {"Default Skin"}
+
+def save_data():
+    """Save coins and equipped skin."""
+    data = {
+        "coins": int(coins),
+        "equipped_skin": equipped_skin,
+        "owned_skins": list(owned_skins)
+    }
+    try:
+        with open(_SAVE_FILENAME, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print("Save failed:", e)
+
+
+# Create coin UI elements on the canvas.
+coin_img_path = resource_path("imgs/coin.png")
+
+# resize coin to a nice small icon (~28×28)
+try:
+    coin_pil = Image.open(coin_img_path).resize((100, 80), Image.LANCZOS)
+    coin_img = ImageTk.PhotoImage(coin_pil)
+except Exception:
+    coin_img = tk.PhotoImage(width=28, height=28)  # fallback blank
+
+# draw icon + text close together (top-left corner)
+coin_image_id = canvas.create_image(20, 26, image=coin_img, anchor="center")
+coin_text_id = canvas.create_text(55, 26, text="x 0",
+                                  font=("Pixel game", 20),
+                                  fill="white",
+                                  anchor="w")
+
+def update_coin_display():
+    """Refresh canvas coin text."""
+    canvas.itemconfig(coin_text_id, text=f"x {coins}")
+
+def add_coins(n):
+    """Add coins, save, play sound, and refresh all displays."""
+    global coins
+    if n <= 0:
+        return
+    coins += int(n)
+    save_data()
+    update_all_coin_displays()  # <-- refresh both displays
+    try:
+        coin_sfx.play()
+    except:
+        pass
+
+
+    # Simple pulse effect
+    def pulse(steps=5, growing=True):
+        global coin_image_id  # <--- need this here too
+        if steps <= 0:
+            canvas.coords(coin_image_id, 20, 26)  # reset position
+            return
+
+        offset = -5 if growing else 5
+        canvas.move(coin_image_id, 0, offset)
+        window.after(50, lambda: pulse(steps-1, not growing))
+
+    pulse()
+
+
+
+
+def spend_coins(n):
+    """Attempt to spend coins, return True if successful."""
+    global coins
+    if n <= 0:
+        return True
+    if coins >= n:
+        coins -= int(n)
+        update_coin_display()
+        save_data()
+        return True
+    return False
+
+def on_win(award=100):
+    """Call this when the player wins a round."""
+    add_coins(award)
+
+# Load saved coins immediately and update UI
+load_save()
+update_coin_display()
+# ------------------ END COIN / SAVE SYSTEM ------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# --- SHOP FRAME SETUP ---
+shop_page = tk.Frame(window, bg="#222222")
+shop_page.place(x=0, y=0, relwidth=1, relheight=1)  # full screen, like other pages
+
+
+
+
+
+
+# Shop title
+shop_title = tk.Label(shop_page, text="SHOP", font=("Pixel game", 40), fg="white", bg="#222222")
+shop_title.place(relx=0.5, y=80, anchor="center")
+
+# Back button
+back_btn = tk.Button(shop_page, text="BACK", font=("Pixel game", 28),
+                     bg="#136bae", fg="#FFE5A1", width=12, relief="raised",
+                     command=lambda: main_menu.tkraise())  # go back to main menu
+back_btn.place(relx=0.5, y=500, anchor="center")
+back_btn.bind("<Enter>", lambda e: back_btn.config(bg="#1e79c6"))
+back_btn.bind("<Leave>", lambda e: back_btn.config(bg="#136bae"))
+
+
+
+
+# Skin prices
+skin_prices = {
+    "Default Skin": 0,
+    "Black Gloves": 1000,
+    #more skins
+}
+
+# Keep references to image objects so Tkinter doesn't garbage collect them
+skin_previews = {}
+
+
+
+
+
+
+# Skin buttons
+skin_paths = {
+    "Default Skin": {
+        "rock": "imgs/rock.png",
+        "paper": "imgs/paper.png",
+        "scissors": "imgs/scissors.png"
+    },
+    "Black Gloves": {
+        "rock": "skins/rockskin.png",
+        "paper": "skins/paperskin.png",
+        "scissors": "skins/scissorskin.png"
+    }
+    # Add more skins here
+}
+
+y_start = 180
+y_step = 60
+preview_size = (80, 80)  # size for shop preview
+
+
+
+
+
+
+# --- Skin system / purchase ---
+owned_skins = {"Default Skin"}  # player starts with default
+equipped_skin = "Default Skin"
+skin_prices = {
+    "Default Skin": 0,
+    "Black Gloves": 1000,
+    # Add other skins with prices, e.g. "Golden Skin": 500
+}
+
+# Preload images for preview
+skin_preview_imgs = {}  # {skin_name: PhotoImage}
+for skin_name, paths in skin_paths.items():
+    try:
+        img_path = paths["rock"]  # show rock as preview
+        pil_img = Image.open(resource_path(img_path)).resize((120, 120), Image.LANCZOS)
+        skin_preview_imgs[skin_name] = ImageTk.PhotoImage(pil_img)
+    except:
+        skin_preview_imgs[skin_name] = tk.PhotoImage(width=120, height=120)
+
+# --- Preview label ---
+skin_preview_label = tk.Label(shop_page, image=None, bg="#222222")
+skin_preview_label.place(relx=0.8, y=170, anchor="center")
+
+def equip_skin(skin_name):
+    global equipped_skin, coins
+
+    # Show preview
+    skin_preview_label.config(image=skin_preview_imgs[skin_name])
+    skin_preview_label.image = skin_preview_imgs[skin_name]
+
+    # Determine the "key" for skin_paths (strip any price label)
+    skin_key = skin_name.split(" |")[0]
+
+    # Check ownership or buy if enough coins
+    if skin_name in owned_skins or skin_prices.get(skin_key, 0) == 0 or coins >= skin_prices.get(skin_key, 0):
+        if skin_name not in owned_skins and skin_prices.get(skin_key, 0) > 0:
+            coins -= skin_prices[skin_key]
+            owned_skins.add(skin_name)
+            save_data()  # <-- save coin deduction
+            print(f"Bought: {skin_name}")
+            update_all_coin_displays()  # <-- refresh both displays
+            coin_sfx.play()
+
+        # Equip the skin
+        equipped_skin = skin_name
+        print(f"Equipped skin: {skin_name}")
+        win_sfx.play()
+
+        # Update hand images in the game
+        paths = skin_paths[skin_key]  # use correct skin_paths key
+        for hand in ["rock", "paper", "scissors"]:
+            new_img = ImageTk.PhotoImage(Image.open(resource_path(paths[hand])).resize(img_size))
+            player_imgs[hand] = new_img
+            base_player_imgs[hand] = new_img
+            canvas.itemconfig(player_labels[hand], image=new_img)
+
+        save_data()
+
+    else:
+        print("Not enough coins to buy this skin!")
+        lose_sfx.play()
+
+
+
+
+
+# skin_paths keys are internal
+# skin_display_names are what you show in buttons
+skin_display_names = {
+    "Default Skin": "Default Skin",
+    "Black Gloves": "Black Gloves"
+}
+
+
+
+
+
+def update_all_coin_displays():
+    """Update coin display everywhere (game canvas + shop)."""
+    # Game canvas
+    canvas.itemconfig(coin_text_id, text=f"x {coins}")
+    
+    # Shop frame
+    shop_coin_text.config(text=f"x {coins}")
+
+
+
+
+
+
+
+
+
+
+load_save()
+
+# Ensure owned_skins includes the saved skin
+if equipped_skin not in owned_skins:
+    equipped_skin = "Default Skin"
+
+# Equip it properly
+for display_name, key in skin_display_names.items():
+    if key == equipped_skin:
+        equip_skin(display_name)
+        break
+
+
+
+
+
+
+
+
+
+
+for idx, skin_key in enumerate(skin_paths):
+    # Load preview (rock image as representative)
+    path = skin_paths[skin_key]["rock"]
+    img = ImageTk.PhotoImage(Image.open(resource_path(path)).resize(preview_size))
+    skin_previews[skin_key] = img  # keep reference
+
+    # Coin cost text
+    cost_lbl = tk.Label(shop_page, text=f"{skin_prices.get(skin_key, 0)} 💰",
+                        font=("Pixel game", 16), fg="yellow", bg="#222222")
+    cost_lbl.place(relx=0.1, y=y_start + idx * y_step, anchor="center")
+
+    # Equip / Buy button
+    btn = tk.Button(shop_page, text=f"{skin_key}", font=("Pixel game", 24),
+                    bg="#444444", fg="white", width=20, relief="raised",
+                    command=lambda sk=skin_key: equip_skin(sk))
+    btn.place(relx=0.5, y=y_start + idx * y_step, anchor="center")
+    btn.bind("<Enter>", lambda e, b=btn: b.config(bg="#555555"))
+    btn.bind("<Leave>", lambda e, b=btn: b.config(bg="#444444"))
+
+    # Preview label
+    preview_lbl = tk.Label(shop_page, image=img, bg="#222222")
+    preview_lbl.place(relx=0.25, y=y_start + idx * y_step, anchor="center")
+
+
+# --- Coin display in shop ---
+shop_coin_img_path = resource_path("imgs/coin.png")
+try:
+    shop_coin_pil = Image.open(shop_coin_img_path).resize((40, 32), Image.LANCZOS)
+    shop_coin_img = ImageTk.PhotoImage(shop_coin_pil)
+except Exception:
+    shop_coin_img = tk.PhotoImage(width=40, height=32)  # fallback
+
+# Coin icon
+shop_coin_label = tk.Label(shop_page, image=shop_coin_img, bg="#222222")
+shop_coin_label.image = shop_coin_img  # keep reference
+shop_coin_label.place(x=700, y=1)  # top-right corner
+
+# Coin count text
+shop_coin_text = tk.Label(shop_page, text=f"x {coins}", font=("Pixel game", 20),
+                          fg="white", bg="#222222")
+shop_coin_text.place(x=730, y=20, anchor="w")
+
+# Function to update coin text in shop
+def update_shop_coins():
+    shop_coin_text.config(text=f"x {coins}")
+
+
+
+# --- Equip / Buy skin function (update in-game hands too) ---
+for idx, skin_key in enumerate(skin_paths):
+    # Load preview (rock image as representative)
+    path = skin_paths[skin_key]["rock"]
+    img = ImageTk.PhotoImage(Image.open(resource_path(path)).resize(preview_size))
+    skin_previews[skin_key] = img  # keep reference
+
+    # Coin cost text
+    cost_lbl = tk.Label(shop_page, text=f"{skin_prices.get(skin_key, 0)} COINS",
+                        font=("Pixel game", 16), fg="yellow", bg="#222222")
+    cost_lbl.place(relx=0.1, y=y_start + idx * y_step, anchor="center")
+
+    # Equip / Buy button
+    btn = tk.Button(shop_page, text=f"{skin_key}", font=("Pixel game", 24),
+                    bg="#444444", fg="white", width=20, relief="raised",
+                    command=lambda sk=skin_key: equip_skin(sk))
+    btn.place(relx=0.5, y=y_start + idx * y_step, anchor="center")
+    btn.bind("<Enter>", lambda e, b=btn: b.config(bg="#555555"))
+    btn.bind("<Leave>", lambda e, b=btn: b.config(bg="#444444"))
+
+    # Preview label
+    preview_lbl = tk.Label(shop_page, image=img, bg="#222222")
+    preview_lbl.place(relx=0.25, y=y_start + idx * y_step, anchor="center")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # --- Pause button in corner ---
 pause_btn_corner_img = Image.open(resource_path("imgs/pause.png")).resize((60, 60))
@@ -300,21 +753,6 @@ def return_to_menu():
 def update_score():
     canvas.itemconfig(score_text_id, text=f"Wins: {wins}  Losses: {losses}  Draws: {draws}")
 
-# --- Load images ---
-img_size = (120, 120)
-player_imgs = {c: ImageTk.PhotoImage(Image.open(resource_path(f"imgs/{c}.png")).resize(img_size)) for c in choices}
-npc_imgs = {c: ImageTk.PhotoImage(Image.open(resource_path(f"imgs/{c}.png")).resize(img_size).rotate(180)) for c in choices}
-base_player_imgs = player_imgs.copy()
-base_npc_imgs = npc_imgs.copy()
-
-# --- Positions ---
-center_x = 400
-spacing = 190
-npc_positions = {"rock": (center_x - spacing, 130), "paper": (center_x, 130), "scissors": (center_x + spacing, 130)}
-player_positions = {"rock": (center_x - spacing, 470), "paper": (center_x, 470), "scissors": (center_x + spacing, 470)}
-npc_labels = {c: canvas.create_image(x, y, image=npc_imgs[c]) for c, (x, y) in npc_positions.items()}
-player_labels = {c: canvas.create_image(x, y, image=player_imgs[c]) for c, (x, y) in player_positions.items()}
-countdown_text = canvas.create_text(center_x, 300, text="", font=("Pixel game", 50), fill="white")
 
 # --- Hover setup ---
 hover_states = {c: False for c in choices}
@@ -323,17 +761,38 @@ def make_glow(img, intensity=1.4):
     enhancer = ImageEnhance.Brightness(img)
     return enhancer.enhance(intensity)
 def pulse_image(choice, grow=True):
-    if not hover_states.get(choice, False): return
+    if not hover_states.get(choice, False):
+        # Restore equipped skin image when hover ends
+        canvas.itemconfig(player_labels[choice], image=base_player_imgs[choice])
+        canvas.coords(player_labels[choice], *player_positions[choice])
+        return
+
+    # Scale factor for pulse
     scale = 1.08 if grow else 1.0
     size = (int(img_size[0]*scale), int(img_size[1]*scale))
-    bright_img = make_glow(Image.open(resource_path(f"imgs/{choice}.png")), 1.5)
+
+    # Take current equipped skin image for this hand
+    # Convert to PIL for brightness adjustment
+    hand_img = player_imgs[choice]._PhotoImage__photo  # get internal PhotoImage for PIL (or reload)
+    pil_img = Image.open(resource_path(f"imgs/{choice}.png")).resize(img_size)
+    
+    # If you want equipped skin, use player_imgs dict
+    pil_img = ImageTk.getimage(player_imgs[choice])
+    bright_img = ImageEnhance.Brightness(pil_img).enhance(1.5)
+
     img = ImageTk.PhotoImage(bright_img.resize(size))
-    scaled_imgs[choice] = img
-    x, y = player_positions[choice]
+    scaled_imgs[choice] = img  # keep reference
+
     canvas.itemconfig(player_labels[choice], image=img)
+    x, y = player_positions[choice]
     canvas.coords(player_labels[choice], x, y)
+
+    # Loop
     window.after(250, lambda: pulse_image(choice, not grow))
+
 def on_enter(event, choice):
+    if game_active or game_paused:
+        return
     hover_states[choice] = True
     pulse_image(choice, True)
 def on_leave(event, choice):
@@ -516,6 +975,7 @@ def play(choice):
             (player_choice == "scissors" and npc_choice == "paper"):
             wins += 1
             win_sfx.play()
+            on_win(100)
             tint_color = "green"
             if player_hp < 3: player_hp += 1
             npc_hp -= 1
